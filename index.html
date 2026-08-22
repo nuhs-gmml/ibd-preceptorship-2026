@@ -320,6 +320,18 @@ function logEvent(type, payload){
     fullState: JSON.stringify(STATE),
     ts: new Date().toISOString(),
   });
+  // Use sendBeacon when available: it's specifically designed to reliably
+  // deliver a fire-and-forget POST even if the page closes/navigates away
+  // immediately after — which is exactly what happens in practice when a
+  // participant finishes a segment/quiz and closes their laptop right away.
+  // A plain fetch() with no await, as this used to be, can get silently
+  // killed mid-flight by the page unload, losing that write. Fall back to
+  // fetch only if sendBeacon is unavailable or the payload is too large for
+  // its queue (it returns false rather than throwing in that case).
+  if(navigator.sendBeacon){
+    const sent = navigator.sendBeacon(CONFIG.GAS_URL, body);
+    if(sent) return;
+  }
   fetch(CONFIG.GAS_URL, { method:'POST', mode:'no-cors', body }).catch(()=>{});
 }
 
