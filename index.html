@@ -650,22 +650,47 @@ function updateProgressText(mod){
 /* ---- Shared time-advance logic (drives both adapters identically) ---- */
 function onTimeAdvance(mod, t){
   const st = STATE[mod.id];
+  // Defensive guard: never trust a reported time beyond what's currently
+  // reachable, and reject non-finite/negative values outright. This closes
+  // a loophole where a misconfigured/blocked embed (e.g. a Vimeo iframe
+  // showing its "sign in to watch" wall) can still fire a timeupdate event
+  // with a bogus/garbage timestamp and falsely mark the video "watched".
+  if(!Number.isFinite(t) || t < 0) return;
+  const cap = segAbs(mod, mod.segments[furthestReachableIndex(st)]).end + 2;
+  if(t > cap) t = cap;
   st.furthest = Math.max(st.furthest, t);
   renderSimTime(mod);
 
-  mod.segments.forEach((seg,i)=>{
+  // Walk segments in order and stop at the first one not yet reached — and,
+  // critically, stop immediately after triggering an unanswered prompt.
+  // (Previously this used forEach with no break: if a single timeupdate
+  // jump spanned multiple segment boundaries — e.g. under a coarse Vimeo
+  // timeupdate interval, or a faster-than-1x playback rate — every prompt
+  // in that span would fire and immediately get overwritten by the next,
+  // so only the LAST one was ever actually visible/answerable, silently
+  // skipping the others. The defensive cap above already prevents most of
+  // this, but this loop makes the one-at-a-time guarantee explicit too.)
+  for(let i=0;i<mod.segments.length;i++){
+    const seg = mod.segments[i];
+    if(st.segDone[i]) continue;
     const abs = segAbs(mod, seg);
-    if(!st.segDone[i] && st.furthest >= abs.end - 0.15){
-      st.segDone[i] = true;
-      logEvent('segmentComplete', {module:mod.id, segment:seg.label});
-      drawSegBar(mod);
-      updateProgressText(mod);
-      if(seg.prompt && !st.promptAnswered[i]){
-        playerPause(mod.id);
-        showPrompt(mod, i);
-      }
+    if(st.furthest < abs.end - 0.15) break;
+    st.segDone[i] = true;
+    logEvent('segmentComplete', {module:mod.id, segment:seg.label});
+    drawSegBar(mod);
+    updateProgressText(mod);
+    if(seg.prompt && !st.promptAnswered[i]){
+      playerPause(mod.id);
+      // Snap the actual player back to this segment's exact boundary so
+      // resumed playback picks up exactly here. Without this, if the real
+      // player had already buffered/drifted past this point by the time we
+      // paused, resuming would silently skip the video content between
+      // this prompt and the next one.
+      playerSeekTo(mod.id, abs.end);
+      showPrompt(mod, i);
+      break;
     }
-  });
+  }
 
   if(st.furthest >= effDuration(mod) - 0.2){
     onVideoEnded(mod);
